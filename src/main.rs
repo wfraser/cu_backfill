@@ -22,6 +22,10 @@ struct Args {
     /// Path to copy the files to. A subdirectory under this will be added for each year.
     #[arg(long)]
     dst: PathBuf,
+
+    /// Don't actually copy, just display what would be copied.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 fn exif_datetime(file: &File) -> anyhow::Result<DateTime> {
@@ -125,7 +129,9 @@ fn main() -> std::io::Result<()> {
             n += 1;
         }
 
-        if let Err(e) = std::fs::copy(path, &new_path) {
+        if args.dry_run {
+            println!("{path:?} -> {new_path:?}");
+        } else if let Err(e) = std::fs::copy(path, &new_path) {
             eprintln!("failed to copy {path:?} to {new_path:?}: {e}");
             continue;
         }
