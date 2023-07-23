@@ -1,0 +1,17 @@
+[package]
+name = "cu_backfill"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+chrono = "0.4.26"
+clap = { version = "4.3.19", features = ["derive"] }
+#kamadak-exif = "0.5.5"  # bugged, see below
+walkdir = "2.3.3"
+
+[dependencies.exif]
+# This patched version of exif-rs avoids common InvalidFormat("Unexpected next IFD") errors.
+git = "https://github.com/vabock/exif-rs"
+rev = "76ee369bf4766af200679f17e216dfda51a262e0"
