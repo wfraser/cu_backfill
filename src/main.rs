@@ -80,7 +80,7 @@ fn main() -> std::io::Result<()> {
         let file = match File::open(path) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("failed to open file {path:?}: {e}");
+                eprintln!("failed to open file {path:?}: {e:?}");
                 continue;
             }
         };
@@ -89,7 +89,7 @@ fn main() -> std::io::Result<()> {
             Some("jpg") => match exif_datetime(&file) {
                 Ok(dt) => Some(dt),
                 Err(e) => {
-                    eprintln!("{path:?}: Couldn't get EXIF DateTime: {e}");
+                    eprintln!("{path:?}: Couldn't get EXIF DateTime: {e:?}");
                     None
                 }
             },
