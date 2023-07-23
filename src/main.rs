@@ -2,6 +2,7 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::BufReader; use std::path::PathBuf;
 
+use anyhow::{Context, anyhow, bail};
 use chrono::{Datelike, Timelike};
 use clap::Parser;
 use exif::{DateTime, In, Reader, Value, Tag};
@@ -23,6 +24,45 @@ struct Args {
     dst: PathBuf,
 }
 
+fn exif_datetime(file: &File) -> anyhow::Result<DateTime> {
+    let exif = Reader::new()
+        .read_from_container(&mut BufReader::new(file))
+        .context("failed to read exif")?;
+
+    let field = exif.get_field(Tag::DateTimeOriginal, In::PRIMARY)
+        .ok_or_else(|| anyhow!("no DateTimeOriginal EXIF tag found"))?;
+
+    let value = match field.value {
+        Value::Ascii(ref vec) if !vec.is_empty() => &vec[0],
+        _ => bail!("DateTimeOriginal EXIF tag has non-ASCII value: {:?}", field.value),
+    };
+
+    let dt = DateTime::from_ascii(&value[..])
+        .with_context(|| format!("unable to parse EXIF DateTime {value:?}"))?;
+
+    Ok(dt)
+}
+
+fn mtime_datetime(file: &File) -> DateTime {
+    let meta = file.metadata().expect("should be able to read metadata from open file");
+    let chr: chrono::DateTime<chrono::Local> = meta.modified().unwrap().into();
+    macro_rules! cast {
+        ($n:expr) => {
+            $n.try_into().unwrap_or_else(|e| panic!("{} ({}): {}", stringify!($n), $n, e))
+        }
+    }
+    DateTime {
+        year: cast!(chr.year()),
+        month: cast!(chr.month()),
+        day: cast!(chr.day()),
+        hour: cast!(chr.hour()),
+        minute: cast!(chr.minute()),
+        second: cast!(chr.second()),
+        nanosecond: None,
+        offset: None,
+    }
+}
+
 fn main() -> std::io::Result<()> {
     let args = Args::parse();
     println!("{args:#?}");
@@ -40,61 +80,19 @@ fn main() -> std::io::Result<()> {
                 continue;
             }
         };
+
         let maybe_datetime = match path.extension().and_then(OsStr::to_str) {
-            Some("jpg") => {
-                Reader::new()
-                    .read_from_container(&mut BufReader::new(&file))
-                    .map_err(|e| {
-                        eprintln!("failed to read exif from {path:?}: {e}");
-                        e
-                    })
-                    .ok()
-                    .and_then(|exif| {
-                        exif.get_field(Tag::DateTimeOriginal, In::PRIMARY)
-                            .and_then(|field| match field.value {
-                                Value::Ascii(ref vec) if !vec.is_empty() => {
-                                    if let Ok(datetime) = DateTime::from_ascii(&vec[0]) {
-                                        Some(datetime)
-                                    } else {
-                                        eprintln!("{path:?}: unable to parse exif datetime {vec:?}");
-                                        None
-                                    }
-                                }
-                                _ => {
-                                    eprintln!("{path:?}: exif datetime is not ascii: {field:?}");
-                                    None
-                                }
-                            })
-                    })
-            }
+            Some("jpg") => match exif_datetime(&file) {
+                Ok(dt) => Some(dt),
+                Err(e) => {
+                    eprintln!("{path:?}: Couldn't get EXIF DateTime: {e}");
+                    None
+                }
+            },
             _ => None,
         };
 
-        // temporary hax
-        /*
-        if maybe_datetime.is_some() {
-            continue;
-        }*/
-
-        let datetime = maybe_datetime.unwrap_or_else(|| {
-            let meta = file.metadata().unwrap();
-            let chr: chrono::DateTime<chrono::Local> = meta.modified().unwrap().into();
-            macro_rules! cast {
-                ($n:expr) => {
-                    $n.try_into().unwrap_or_else(|e| panic!("{} ({}): {}", stringify!($n), $n, e))
-                }
-            }
-            DateTime {
-                year: cast!(chr.year()),
-                month: cast!(chr.month()),
-                day: cast!(chr.day()),
-                hour: cast!(chr.hour()),
-                minute: cast!(chr.minute()),
-                second: cast!(chr.second()),
-                nanosecond: None,
-                offset: None,
-            }
-        });
+        let datetime = maybe_datetime.unwrap_or_else(|| mtime_datetime(&file));
 
         let filename = |n: usize| {
             let mut s = format!("{:04}-{:02}-{:02} {:02}.{:02}.{:02}",
