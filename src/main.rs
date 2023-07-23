@@ -1,11 +1,11 @@
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::BufReader; use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, anyhow, bail};
 use chrono::{Datelike, Timelike};
 use clap::Parser;
-use exif::{DateTime, In, Reader, Value, Tag};
+use rexif::{ExifTag, TagValue};
 use walkdir::WalkDir;
 
 /// Copy all files from a directory tree into another, using names that match how Dropbox Camera
@@ -28,23 +28,68 @@ struct Args {
     dry_run: bool,
 }
 
-fn exif_datetime(file: &File) -> anyhow::Result<DateTime> {
-    let exif = Reader::new()
-        .read_from_container(&mut BufReader::new(file))
-        .context("failed to read exif")?;
+struct DateTime {
+    year: u32,
+    month: u8,
+    day: u8,
+    hour: u8,
+    minute: u8,
+    second: u8,
+}
 
-    let field = exif.get_field(Tag::DateTimeOriginal, In::PRIMARY)
+fn exif_datetime(path: &Path) -> anyhow::Result<DateTime> {
+    let exif = rexif::parse_file(path)
+        .context("failed to read EXIF")?;
+
+    let field = exif.entries
+        .into_iter()
+        .find(|entry| entry.tag == ExifTag::DateTimeOriginal)
         .ok_or_else(|| anyhow!("no DateTimeOriginal EXIF tag found"))?;
 
     let value = match field.value {
-        Value::Ascii(ref vec) if !vec.is_empty() => &vec[0],
+        TagValue::Ascii(s) => s,
         _ => bail!("DateTimeOriginal EXIF tag has non-ASCII value: {:?}", field.value),
     };
 
-    let dt = DateTime::from_ascii(&value[..])
+    let dt = parse_exif_datetime(value.as_bytes())
         .with_context(|| format!("unable to parse EXIF DateTime {value:?}"))?;
 
     Ok(dt)
+}
+
+fn atou<T: num::CheckedAdd + num::CheckedMul + num::FromPrimitive + num::Zero>(bytes: &[u8]) -> anyhow::Result<T> {
+    let mut n = T::zero();
+    let ten = T::from_u8(10).unwrap();
+    for b in bytes {
+        if !b.is_ascii_digit() {
+            bail!("non-ascii digit {b:#x}");
+        }
+        let digit = T::from_u8(u8::from(b - b'0')).unwrap();
+        n = n.checked_mul(&ten)
+            .and_then(|n| n.checked_add(&digit))
+            .ok_or_else(|| anyhow!("overflow"))?;
+    }
+    Ok(n)
+}
+
+fn parse_exif_datetime(data: &[u8]) -> anyhow::Result<DateTime> {
+    // cribbed from exif-rs
+    if data == b"    :  :     :  :  " || data == b"                   " {
+        bail!("EXIF DateTime is blank");
+    } else if data.len() < 19 {
+        bail!("EXIF DateTime too short");
+    } else if !(data[4] == b':' && data[7] == b':' && data[10] == b' ' &&
+                data[13] == b':' && data[16] == b':') {
+        bail!("Invalid EXIF DateTime delimiter");
+    }
+    Ok(DateTime {
+        year: atou(&data[0..4])?,
+        month: atou(&data[5..7])?,
+        day: atou(&data[8..10])?,
+        hour: atou(&data[11..13])?,
+        minute: atou(&data[14..16])?,
+        second: atou(&data[17..19])?,
+    })
 }
 
 fn mtime_datetime(file: &File) -> DateTime {
@@ -62,8 +107,6 @@ fn mtime_datetime(file: &File) -> DateTime {
         hour: cast!(chr.hour()),
         minute: cast!(chr.minute()),
         second: cast!(chr.second()),
-        nanosecond: None,
-        offset: None,
     }
 }
 
@@ -85,8 +128,8 @@ fn main() -> std::io::Result<()> {
             }
         };
 
-        let maybe_datetime = match path.extension().and_then(OsStr::to_str) {
-            Some("jpg") => match exif_datetime(&file) {
+        let maybe_datetime = match path.extension().and_then(OsStr::to_str).map(str::to_ascii_lowercase).as_deref() {
+            Some("jpg") | Some("tif") | Some("tiff") => match exif_datetime(path) {
                 Ok(dt) => Some(dt),
                 Err(e) => {
                     eprintln!("{path:?}: Couldn't get EXIF DateTime: {e:?}");
