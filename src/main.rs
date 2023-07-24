@@ -125,7 +125,9 @@ fn main() -> std::io::Result<()> {
         let mut new_path = args.dst
             .join(datetime.year.to_string());
 
-        if !new_path.exists() { std::fs::create_dir_all(&new_path).unwrap(); }
+        if !new_path.exists() && !args.dry_run {
+            std::fs::create_dir_all(&new_path).unwrap();
+        }
 
         new_path.push(filename(0));
 
